@@ -24,9 +24,11 @@ services:
     working_dir: /home/frappe
     volumes:
       - .:/workspace
+      - bench-data:/home/frappe/frappe-bench
     ports:
       - 8000:8000
       - 9000:9000
 
 volumes:
   mariadb-data:
+  bench-data:
