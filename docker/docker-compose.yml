@@ -1,4 +1,3 @@
-version: "3.7"
 name: lms
 services:
   mariadb:
@@ -25,6 +24,10 @@ services:
     volumes:
       - .:/workspace
       - bench-data:/home/frappe/frappe-bench
+      - ..:/home/frappe/frappe-bench/apps/lms
+      - ../../avior:/home/frappe/frappe-bench/apps/avior
+      - /home/frappe/frappe-bench/apps/lms/node_modules
+      - /home/frappe/frappe-bench/apps/lms/frontend/node_modules
     ports:
       - 8000:8000
       - 9000:9000
