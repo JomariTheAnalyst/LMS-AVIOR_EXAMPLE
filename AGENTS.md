@@ -57,6 +57,13 @@ The real bind mount is required because `frontend/src/socket.js` imports `../../
 
 New Docker volumes must be owned by the container user before they are used. Run `chown -R frappe:frappe <mount-point>` for each new volume before installing dependencies, building assets, or running any process that writes to it.
 
+`apps/lms/frontend/node_modules` is a Docker volume. If it is empty or root-owned, repair ownership first, then install as the `frappe` user:
+
+```bash
+docker exec -u root lms-frappe-1 bash -lc "chown -R frappe:frappe /home/frappe/frappe-bench/apps/lms/frontend/node_modules"
+docker exec lms-frappe-1 bash -lc "cd /home/frappe/frappe-bench/apps/lms/frontend && yarn install"
+```
+
 Git treats the bind-mounted checkout as a different owner. Before running Git inside the container, the repository needs this safe-directory exception:
 
 ```bash
@@ -77,7 +84,7 @@ bench restart
 cd apps/lms/frontend && yarn dev            # SPA hot reload
 ```
 
-Python changes hot-reload (`developer_mode` is on). Vue changes do not.
+Python changes hot-reload (`developer_mode` is on). Vue changes do not. Every LMS frontend change requires `bench build --app lms`; source edits alone have no effect because the SPA is compiled.
 
 ---
 
@@ -262,21 +269,23 @@ You must **not**:
 
 ## 13. Verification protocol
 
-Every task runs **exactly three groups, in order**. **Stop at the first failure.** Do not attempt a fix.
+Every task runs **exactly three groups, in order**. **Stop at the first genuine code failure.** Formatting-only differences are auto-fixable: run `env/bin/ruff format apps/avior`, then continue verification.
+
+Distinguish **TOOLING UNAVAILABLE** from **CHECK FAILED**. If a required tool is missing or its invocation errors for environment reasons rather than code reasons, report it clearly, mark that check as **SKIPPED**, and continue the remaining verification. Stop only for genuine code failures: syntax errors, lint errors, failing tests, migration errors, or runtime errors in project code.
 
 Run from `/home/frappe/frappe-bench`.
 
-### V1 — Static
+### V1 — Static and formatting
 
-Nothing executed, nothing changed.
+Run through the container so the checks use the bench environment. Formatting may update files and is not a failure.
 
 ```bash
-ruff check apps/avior
-ruff format --check apps/avior
-python -m compileall -q apps/avior
+docker exec lms-frappe-1 bash -lc "cd /home/frappe/frappe-bench && env/bin/ruff check apps/avior"
+docker exec lms-frappe-1 bash -lc "cd /home/frappe/frappe-bench && env/bin/ruff format apps/avior"
+docker exec lms-frappe-1 bash -lc "cd /home/frappe/frappe-bench && python -m compileall -q apps/avior"
 ```
 
-If you modified the Vue SPA, additionally run the lint script defined in `apps/lms/frontend/package.json`. **TypeScript checking does not apply to `avior`** — it is Jinja, CSS, and plain JS. Run `npx vue-tsc --noEmit` only inside `apps/lms/frontend`, and only if a `tsconfig.json` exists there. Do not invent a check that the project has no tooling for.
+If you modified the Vue SPA, additionally run the lint script defined in `apps/lms/frontend/package.json`, if one exists. Do not invent a check that the project has no tooling for. Vue type checking with `vue-tsc --noEmit` is not required. The required frontend gate is a successful `bench build --app lms` in V2.
 
 ### V2 — Integration
 
@@ -301,7 +310,7 @@ Expect `200` for both. `git status` must show no changes outside the task's stat
 
 Per group: **PASS / FAILED / NOT RUN**.
 
-On failure, report: the group, the exact command, the exact error, your diagnosis of the cause, and what remains unverified as a consequence. Then stop.
+On a genuine code failure, report: the group, the exact command, the exact error, your diagnosis of the cause, and what remains unverified as a consequence. Then stop. For unavailable or broken tooling, report the check as **SKIPPED** and continue.
 
 ---
 

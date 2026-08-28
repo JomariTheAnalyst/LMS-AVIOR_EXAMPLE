@@ -173,6 +173,19 @@ The Gmail app password is deliberately not in any repo — reconfigure the Email
 
 `docker compose down` (no `-v`) is safe: named volumes survive. `-v` deletes the bench and the database.
 
+LMS frontend source changes have no effect until the SPA is compiled. Rebuild after every frontend change:
+
+```powershell
+docker exec lms-frappe-1 bash -lc "cd /home/frappe/frappe-bench && bench build --app lms"
+```
+
+`apps/lms/frontend/node_modules` is mounted as an anonymous Docker volume. If it is empty or root-owned, fix its ownership as root and then install dependencies as the `frappe` user:
+
+```powershell
+docker exec -u root lms-frappe-1 bash -lc "chown -R frappe:frappe /home/frappe/frappe-bench/apps/lms/frontend/node_modules"
+docker exec lms-frappe-1 bash -lc "cd /home/frappe/frappe-bench/apps/lms/frontend && yarn install"
+```
+
 ---
 
 ## 7. Rules that prevent repeat disasters
