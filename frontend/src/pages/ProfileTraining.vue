@@ -178,8 +178,7 @@ const loadSection = async (section, showError = true) => {
 
 	section.loading = true
 	try {
-		const response = await call('avior.api.get_user_training', {
-			target_user: props.profile.data.name,
+		const response = await call('avior.api.get_my_training', {
 			status: section.status,
 			offset: section.offset,
 			limit: PAGE_SIZE,
