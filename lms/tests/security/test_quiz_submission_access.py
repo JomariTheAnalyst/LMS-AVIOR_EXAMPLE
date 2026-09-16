@@ -81,6 +81,73 @@ class TestQuizSubmissionAccess(BaseTestUtils, FrappeAPITestCase):
 		self.assertIn("submission", result)
 		self._cleanup_submissions(self.enrolled.email)
 
+	def test_legitimate_submission_scores_exactly_as_before(self):
+		# Regression guard for the integrity fix below: a normal, single-row-per-question
+		# submission (all answered correctly) must still score full marks, unaffected by the
+		# new dedup/limit/ceiling checks.
+		result = self._submit(self.enrolled.email)
+		submission = frappe.get_doc("LMS Quiz Submission", result["submission"])
+		self.assertEqual(submission.score, self.quiz.total_marks)
+		self.assertEqual(result["percentage"], 100)
+		self._cleanup_submissions(self.enrolled.email)
+
+	def test_duplicate_question_submission_is_rejected(self):
+		# VULN-2026-FRAPPE-LMS-SCORE-INFLATION: repeating a correctly-answered question must
+		# not multiply its marks. The crafted payload is rejected outright, not deduped-and-scored.
+		crafted = self.results + [self.results[0]]
+		frappe.session.user = self.enrolled.email
+		try:
+			with self.assertRaises(frappe.ValidationError):
+				submit_quiz(self.quiz.name, json.dumps(crafted))
+		finally:
+			frappe.session.user = "Administrator"
+		self.assertEqual(
+			frappe.db.count("LMS Quiz Submission", {"quiz": self.quiz.name, "member": self.enrolled.email}),
+			0,
+		)
+
+	def test_submission_over_question_limit_is_rejected(self):
+		# Padding the result list past the quiz's real question count must be rejected before
+		# scoring, even if the extra row doesn't name a real question (membership is checked
+		# later, in process_results; the limit check runs first).
+		padded = self.results + [{"question_name": "not-a-real-question", "answer": ["x"]}]
+		frappe.session.user = self.enrolled.email
+		try:
+			with self.assertRaises(frappe.ValidationError):
+				submit_quiz(self.quiz.name, json.dumps(padded))
+		finally:
+			frappe.session.user = "Administrator"
+		self.assertEqual(
+			frappe.db.count("LMS Quiz Submission", {"quiz": self.quiz.name, "member": self.enrolled.email}),
+			0,
+		)
+
+	def test_question_not_in_quiz_is_rejected(self):
+		# Membership check: a question that exists but does not belong to this quiz must still
+		# be rejected (unchanged behavior, kept as an explicit regression test).
+		foreign_question = frappe.new_doc("LMS Question")
+		foreign_question.update(
+			{
+				"question": "Foreign question",
+				"type": "Choices",
+				"option_1": "Option 1",
+				"is_correct_1": 1,
+				"option_2": "Option 2",
+				"is_correct_2": 0,
+			}
+		)
+		foreign_question.save()
+		try:
+			crafted = [{"question_name": foreign_question.name, "answer": ["Option 1"]}]
+			frappe.session.user = self.enrolled.email
+			try:
+				with self.assertRaises(frappe.ValidationError):
+					submit_quiz(self.quiz.name, json.dumps(crafted))
+			finally:
+				frappe.session.user = "Administrator"
+		finally:
+			frappe.delete_doc("LMS Question", foreign_question.name, force=True, ignore_permissions=True)
+
 	def test_max_attempts_enforced(self):
 		# max_attempts is enforced downstream by LMSQuizSubmission.validate; this guards
 		# against that gate regressing (the score-oracle cap the access check relies on).

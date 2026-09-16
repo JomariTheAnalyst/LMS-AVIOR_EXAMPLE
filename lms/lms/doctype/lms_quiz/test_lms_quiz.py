@@ -254,3 +254,48 @@ class TestQuizResultValidation(unittest.TestCase):
 			with self.subTest(results=results):
 				with self.assertRaises(ValidationError):
 					self.fn(results)
+
+
+class TestSubmissionIntegrityValidation(unittest.TestCase):
+	"""submit_quiz must reject a padded/duplicated result list before any scoring happens
+	(the score-inflation vulnerability). Fixture-free: a `limit_questions_to` > 0 short-circuits
+	the frappe.db.count() fallback, so the pure question-count/duplicate logic can be tested
+	without a real LMS Quiz / LMS Quiz Question fixture.
+	"""
+
+	def setUp(self):
+		from lms.lms.doctype.lms_quiz.lms_quiz import _validate_submission_integrity
+
+		self.fn = _validate_submission_integrity
+
+	def test_duplicate_question_is_rejected(self):
+		quiz_details = frappe._dict(name="Q", limit_questions_to=3)
+		results = [
+			{"question_name": "Q1", "answer": ["a"]},
+			{"question_name": "Q2", "answer": ["b"]},
+			{"question_name": "Q1", "answer": ["c"]},  # repeats Q1
+		]
+		with self.assertRaises(ValidationError):
+			self.fn(results, quiz_details)
+
+	def test_submission_over_limit_is_rejected(self):
+		quiz_details = frappe._dict(name="Q", limit_questions_to=2)
+		results = [
+			{"question_name": "Q1", "answer": ["a"]},
+			{"question_name": "Q2", "answer": ["b"]},
+			{"question_name": "Q3", "answer": ["c"]},  # exceeds the configured limit of 2
+		]
+		with self.assertRaises(ValidationError):
+			self.fn(results, quiz_details)
+
+	def test_unique_within_limit_passes(self):
+		quiz_details = frappe._dict(name="Q", limit_questions_to=3)
+		results = [
+			{"question_name": "Q1", "answer": ["a"]},
+			{"question_name": "Q2", "answer": ["b"]},
+		]
+		self.fn(results, quiz_details)  # must not raise
+
+	def test_empty_results_pass(self):
+		quiz_details = frappe._dict(name="Q", limit_questions_to=3)
+		self.fn([], quiz_details)  # must not raise

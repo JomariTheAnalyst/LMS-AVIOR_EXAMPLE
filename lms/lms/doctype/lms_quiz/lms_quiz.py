@@ -135,6 +135,33 @@ def _validate_quiz_results(results):
 			frappe.throw(_("Invalid quiz results submitted."), frappe.ValidationError)
 
 
+def _validate_submission_integrity(results: list, quiz_details: dict):
+	"""Reject a forged/padded submission before any scoring happens (VULN: client-controlled
+	result list let a crafted request inflate a score past the quiz's maximum).
+
+	Two checks, both keyed only on `question_name` (membership against the quiz is validated
+	separately, per-row, in process_results):
+
+	- Duplicate questions are rejected outright rather than deduped-to-one. The quiz-taking UI
+	  (Quiz.vue) renders and submits exactly one row per question; a duplicate can only come
+	  from a hand-crafted payload, so there is no legitimate case to silently correct for, and
+	  rejecting avoids any ambiguity about which duplicate's answer would otherwise "win".
+	- The row count is capped at the quiz's configured question limit: `limit_questions_to`
+	  when set (shuffle mode), otherwise the full size of the quiz's question set. Both are
+	  reconstructed server-side from LMS Quiz / LMS Quiz Question, never trusted from the
+	  client.
+	"""
+	question_names = [result["question_name"] for result in results]
+	if len(question_names) != len(set(question_names)):
+		frappe.throw(_("Invalid quiz results submitted."), frappe.ValidationError)
+
+	question_limit = cint(quiz_details.limit_questions_to) or frappe.db.count(
+		"LMS Quiz Question", {"parent": quiz_details.name}
+	)
+	if question_limit and len(question_names) > question_limit:
+		frappe.throw(_("Invalid quiz results submitted."), frappe.ValidationError)
+
+
 @frappe.whitelist()
 def submit_quiz(quiz: str, results: str | None = None):
 	if not isinstance(quiz, str):
@@ -156,6 +183,7 @@ def submit_quiz(quiz: str, results: str | None = None):
 			"course",
 			"enable_negative_marking",
 			"marks_to_cut",
+			"limit_questions_to",
 		],
 		as_dict=1,
 	)
@@ -167,8 +195,17 @@ def submit_quiz(quiz: str, results: str | None = None):
 	if not can_access_quiz(quiz):
 		frappe.throw(_("You are not authorized to submit this quiz."), frappe.PermissionError)
 
+	_validate_submission_integrity(results, quiz_details)
+
 	data = process_results(results, quiz_details)
 	is_open_ended = data["is_open_ended"]
+
+	# Defense-in-depth ceiling: with dedup + the question-limit check above, the summed
+	# marks can't legitimately exceed total_marks, but this is cheap to assert explicitly
+	# and rejects (rather than silently clamping) before any document is inserted.
+	computed_score = sum(cint(result.get("marks")) for result in data["results"])
+	if computed_score > cint(quiz_details.total_marks):
+		frappe.throw(_("Invalid quiz results submitted."), frappe.ValidationError)
 
 	# Score and percentage are the submission's responsibility. Its validate()
 	# runs validate_marks() + set_percentage() on save. Read them back rather
