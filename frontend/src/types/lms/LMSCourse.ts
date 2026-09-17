@@ -25,6 +25,8 @@ export interface LMSCourse {
 	short_introduction: string
 	/**	Disable Self Learning : Check	*/
 	disable_self_learning?: 0 | 1
+	/**	Assigned only (hide from catalog) : Check — avior Custom Field	*/
+	avior_assigned_only?: 0 | 1
 	/**	Preview Image : Attach Image	*/
 	image?: string
 	/**	Tags : Data	*/

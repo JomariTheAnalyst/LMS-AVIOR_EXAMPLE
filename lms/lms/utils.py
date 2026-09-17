@@ -863,6 +863,92 @@ def guest_access_allowed():
 	return True
 
 
+# Visibility the catalog endpoints enforce themselves. They query through
+# frappe.get_all, which sets ignore_permissions=True, so DocPerms and the
+# permission_query_conditions / has_permission hooks never run for them and the
+# client's `published` filter is a request, not a gate. Non-staff callers see a
+# course only if it is published, or they are enrolled in it, and never an
+# assigned-only course they are not enrolled in.
+#
+# `avior_assigned_only` is a Custom Field installed by the avior app; the
+# has_field guard keeps this module working on a site without it.
+ASSIGNED_ONLY_FIELD = "avior_assigned_only"
+CATALOG_STAFF_ROLES = PRIVILEGED_ROLES | {"AVIOR Training Administrator"}
+
+
+def is_catalog_staff(user: str = None) -> bool:
+	user = user or frappe.session.user
+	return user == "Administrator" or bool(CATALOG_STAFF_ROLES & set(frappe.get_roles(user)))
+
+
+def course_has_assigned_only_field() -> bool:
+	return frappe.get_meta("LMS Course").has_field(ASSIGNED_ONLY_FIELD)
+
+
+def is_course_assigned_only(course: str) -> bool:
+	if not course_has_assigned_only_field():
+		return False
+	return bool(cint(frappe.db.get_value("LMS Course", course, ASSIGNED_ONLY_FIELD)))
+
+
+def get_hidden_courses(user: str = None) -> list:
+	"""Courses the user may not discover: unpublished or assigned-only, minus enrolled.
+
+	Two queries regardless of how many courses exist: one bulk enrollment lookup,
+	one for the courses it does not clear."""
+	user = user or frappe.session.user
+	if is_catalog_staff(user):
+		return []
+
+	enrolled = frappe.get_all("LMS Enrollment", {"member": user}, pluck="course") if user != "Guest" else []
+	or_filters = {"published": 0}
+	if course_has_assigned_only_field():
+		or_filters[ASSIGNED_ONLY_FIELD] = 1
+	filters = {"name": ["not in", enrolled]} if enrolled else {}
+	return frappe.get_all("LMS Course", filters=filters, or_filters=or_filters, pluck="name")
+
+
+def get_hidden_batches(user: str = None) -> list:
+	"""Batches the user may not discover: unpublished, minus enrolled."""
+	user = user or frappe.session.user
+	if is_catalog_staff(user):
+		return []
+
+	enrolled = (
+		frappe.get_all("LMS Batch Enrollment", {"member": user}, pluck="batch") if user != "Guest" else []
+	)
+	filters = {"published": 0}
+	if enrolled:
+		filters["name"] = ["not in", enrolled]
+	return frappe.get_all("LMS Batch", filters=filters, pluck="name")
+
+
+def exclude_names(filters: dict, hidden: list) -> None:
+	"""Narrows a list endpoint's filter dict to exclude `hidden`, in place.
+
+	The dict can hold one condition per field, so the client's own `name`
+	condition is merged rather than kept alongside: `=` and `in` are intersected,
+	`not in` is unioned, and any other operator (which the SPA never sends) is
+	replaced by an empty match. The restriction always wins."""
+	if not hidden:
+		return
+
+	hidden_set = set(hidden)
+	current = filters.get("name")
+	if current is None:
+		filters["name"] = ["not in", hidden]
+	elif isinstance(current, str):
+		filters["name"] = ["in", [] if current in hidden_set else [current]]
+	elif isinstance(current, list | tuple) and len(current) == 2 and current[0] == "=":
+		filters["name"] = ["in", [] if current[1] in hidden_set else [current[1]]]
+	elif isinstance(current, list | tuple) and len(current) == 2 and current[0] == "in":
+		filters["name"] = ["in", [name for name in current[1] if name not in hidden_set]]
+	elif isinstance(current, list | tuple) and len(current) == 2 and current[0] == "not in":
+		filters["name"] = ["not in", sorted(hidden_set | set(current[1]))]
+	else:
+		filters["name"] = ["in", []]
+
+
 DEFAULT_PAGE_LENGTH = 24
 MAX_PAGE_LENGTH = 120
 
@@ -1045,6 +1131,10 @@ def update_course_filters(filters: dict) -> tuple:
 		or_filters.update({"paid_certificate": 1})
 		del filters["certification"]
 
+	# Server-side gate for get_courses / get_course_count, applied after the
+	# pseudo-filters so an `enrolled` name list is intersected, not replaced.
+	exclude_names(filters, get_hidden_courses())
+
 	return filters, or_filters, show_featured
 
 
@@ -1131,8 +1221,13 @@ def get_course_details(course: str):
 
 	is_course_published = frappe.db.get_value("LMS Course", course, "published")
 	membership = get_membership(course)
-	if not is_course_published and not can_modify_course(course) and not membership:
-		return {}
+	assigned_only = is_course_assigned_only(course)
+	if not membership and not can_modify_course(course):
+		# Same rule as the catalog (get_hidden_courses): drafts and assigned-only
+		# courses are for members and staff. {} rather than an error, so a guessed
+		# URL reveals nothing.
+		if not is_course_published or (assigned_only and not is_catalog_staff()):
+			return {}
 
 	fields = get_course_fields()
 	course_details = frappe.db.get_value(
@@ -1148,6 +1243,9 @@ def get_course_details(course: str):
 
 	course_details.instructors = get_instructors("LMS Course", course_details.name)
 	course_details.membership = membership
+	# Drives the self-enroll button in CourseCardOverlay.vue; the gate above is
+	# what actually enforces it.
+	course_details[ASSIGNED_ONLY_FIELD] = int(assigned_only)
 	course_details.rating_count = frappe.db.count("LMS Course Review", {"course": course})
 	course_details.update(get_course_content_stats(course))
 	# course_details.is_instructor = is_instructor(course_details.name)
@@ -2711,6 +2809,7 @@ def get_batches(
 		filters = {}
 
 	update_batch_filters(filters)
+	exclude_names(filters, get_hidden_batches())
 
 	batches = frappe.get_all(
 		"LMS Batch",
@@ -2772,6 +2871,7 @@ def get_batch_count(filters: dict = None) -> int:
 		filters = {}
 
 	update_batch_filters(filters)
+	exclude_names(filters, get_hidden_batches())
 	total = count_matching("LMS Batch", filters)
 
 	batch_type = get_batch_type(filters)

@@ -22,6 +22,17 @@
 					:label="__('Self enrollment')"
 					:description="__('Let users enroll themselves.')"
 				/>
+				<!-- avior Custom Field; only rendered on a site that installs it. -->
+				<BooleanSwitch
+					v-if="hasAssignedOnlyField"
+					size="sm"
+					v-model="doc.avior_assigned_only"
+					:label="__('Assigned only')"
+					:description="
+						__('Hide from the catalog. Only enrolled learners can find it.')
+					"
+					@update:modelValue="markDirty()"
+				/>
 			</div>
 		</CollapsibleSection>
 
@@ -218,6 +229,10 @@ const publishedOnLabel = computed<string>(() =>
 	doc.value?.published_on
 		? dayjs(doc.value.published_on).format('DD MMM YYYY')
 		: ''
+)
+
+const hasAssignedOnlyField = computed<boolean>(
+	() => !!doc.value && 'avior_assigned_only' in doc.value
 )
 
 const selfEnrollment = computed<boolean>({

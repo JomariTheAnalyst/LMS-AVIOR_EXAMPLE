@@ -29,11 +29,16 @@ def prepare_search_results(result: dict):
 
 
 def get_grouped_results(result):
+	from lms.lms.utils import get_hidden_courses
+
 	roles = frappe.get_roles()
+	# The index carries `published` but not the assigned-only flag; one bulk
+	# lookup (empty for staff) rather than a query per hit.
+	hidden_courses = set(get_hidden_courses())
 	groups = {}
 	for r in result["results"]:
 		doctype = r["doctype"]
-		if doctype == "LMS Course" and can_access_course(r, roles):
+		if doctype == "LMS Course" and can_access_course(r, roles, hidden_courses):
 			r["author_info"] = get_instructor_info(doctype, r)
 			groups.setdefault("Courses", []).append(r)
 		elif doctype == "LMS Batch" and can_access_batch(r, roles):
@@ -55,10 +60,10 @@ def remove_duplicates(items):
 	return unique_items
 
 
-def can_access_course(course, roles):
+def can_access_course(course, roles, hidden_courses=frozenset()):
 	if can_create_course(roles):
 		return True
-	elif course.get("published"):
+	elif course.get("published") and course.get("name") not in hidden_courses:
 		return True
 	return False
 

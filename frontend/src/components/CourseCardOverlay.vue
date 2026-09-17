@@ -66,8 +66,10 @@
 				>
 					{{ __('Contact the Administrator to enroll for this course') }}
 				</Badge>
+				<!-- Assigned-only courses are enrolled by an administrator; the backend
+				     (get_course_details) is the gate, this only hides the self-serve path. -->
 				<Button
-					v-else-if="!isAdmin"
+					v-else-if="!isAdmin && !course.data?.avior_assigned_only"
 					@click="enrollStudent()"
 					variant="solid"
 					class="w-full mb-8"

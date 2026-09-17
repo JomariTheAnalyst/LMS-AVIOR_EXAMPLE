@@ -190,8 +190,12 @@ const updateCourseData = (): void => {
 		'featured',
 		'enable_certification',
 		'paid_certificate',
+		'avior_assigned_only',
 	]
 	for (const key of checkboxes) {
+		// A Custom Field can be absent on a site that doesn't install it; leave
+		// it out rather than posting a key the DocType doesn't have.
+		if (!(key in doc)) continue
 		;(doc as Record<string, unknown>)[key] = doc[key] ? true : false
 	}
 }

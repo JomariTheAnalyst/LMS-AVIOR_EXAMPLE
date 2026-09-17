@@ -71,6 +71,17 @@
 						:required="false"
 						:description="thumbnailGuidelines"
 					/>
+					<!-- avior Custom Field; only rendered on a site that installs it.
+					     Same switch as CoursePublishSettings.vue, defaulted on. -->
+					<BooleanSwitch
+						v-if="hasAssignedOnlyField"
+						size="sm"
+						v-model="course.avior_assigned_only"
+						:label="__('Assigned only')"
+						:description="
+							__('Hide from the catalog. Only enrolled learners can find it.')
+						"
+					/>
 				</div>
 				<div class="space-y-4">
 					<FormControl
@@ -198,6 +209,7 @@ type Course = {
 	instructors: string[]
 	category?: string
 	image?: string
+	avior_assigned_only: boolean
 }
 
 const course = ref<Course>({
@@ -207,7 +219,27 @@ const course = ref<Course>({
 	instructors: [],
 	category: undefined,
 	image: undefined,
+	// Matches the avior Custom Field default (1). Only sent when the field exists.
+	avior_assigned_only: true,
 })
+
+// No doc is loaded here (unlike CoursePublishSettings.vue), so the field's
+// presence is read off the DocType meta instead. frappe-ui hands back the
+// whole payload when it carries `docs`, hence the `.docs[0]` reach.
+const courseMeta = createResource({
+	url: 'frappe.desk.form.load.getdoctype',
+	params: { doctype: 'LMS Course' },
+	auto: true,
+	cache: ['doctype-meta', 'LMS Course'],
+})
+const hasAssignedOnlyField = computed<boolean>(() =>
+	Boolean(
+		courseMeta.data?.docs?.[0]?.fields?.some(
+			(field: { fieldname: string }) =>
+				field.fieldname === 'avior_assigned_only'
+		)
+	)
+)
 
 const INSTRUCTOR_ROLES = ['Course Creator', 'Batch Evaluator']
 const MAX_VISIBLE_AVATARS = 3
@@ -330,13 +362,18 @@ const validateFields = () => {
 const saveCourse = () => {
 	if (!canCreate.value) return
 	validateFields()
+	const { avior_assigned_only, ...fields } = course.value
 	submitResource(
 		courses.insert,
 		{
-			...course.value,
+			...fields,
 			instructors: course.value.instructors.map((instructor) => ({
 				instructor: instructor,
 			})),
+			// Only post the avior field where the DocType has it, as 0/1.
+			...(hasAssignedOnlyField.value
+				? { avior_assigned_only: avior_assigned_only ? 1 : 0 }
+				: {}),
 		},
 		{
 			onSuccess(data: any) {
