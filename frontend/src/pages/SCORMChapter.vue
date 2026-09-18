@@ -2,16 +2,34 @@
 	<PageHeader :breadcrumbs="breadcrumbs" />
 	<div
 		v-if="
-			readyToRender &&
+			chapter.doc &&
 			(enrollment.data?.length ||
 				user.data?.is_moderator ||
 				user.data?.is_instructor)
 		"
 	>
-		<iframe
-			:src="safeUrl(chapter.doc.launch_file)"
-			:title="chapter.doc?.title || __('Lesson content')"
-			class="w-full h-[calc(100vh-3.00rem)]"
+		<div
+			class="sticky top-0 z-10 flex h-12 items-center justify-between gap-4 border-b bg-surface-base px-5"
+		>
+			<div class="min-w-0 truncate text-p-sm font-medium text-ink-gray-8">
+				{{ chapter.doc?.course_title }}
+				<span class="text-ink-gray-4">/</span>
+				{{ chapter.doc?.title }}
+			</div>
+			<Button
+				variant="subtle"
+				size="sm"
+				:label="__('Back to course')"
+				@click="goToCourse()"
+			/>
+		</div>
+		<SCORMPlayer
+			:launch-file="chapter.doc.launch_file"
+			:course-name="props.courseName"
+			:lesson-name="chapter.doc.lessons[0].lesson"
+			:chapter-name="chapter.doc.name"
+			class="h-[calc(100vh-6rem)]"
+			@complete="onComplete"
 		/>
 	</div>
 	<div v-else-if="!enrollment.data?.length">
@@ -30,32 +48,32 @@
 			</div>
 		</div>
 	</div>
+
+	<Dialog v-model:open="showCompletionModal" :title="modalTitle" :actions="modalActions">
+		<template #default>
+			<p class="text-p-base text-ink-gray-7">{{ modalMessage }}</p>
+		</template>
+	</Dialog>
 </template>
 <script setup>
 import {
 	Button,
-	call,
+	Dialog,
 	createDocumentResource,
 	createListResource,
-	createResource,
 	usePageMeta,
 } from 'frappe-ui'
-import { computed, inject, onBeforeMount, ref } from 'vue'
+import { computed, inject, onBeforeMount, onBeforeUnmount, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import PageHeader from '@/components/Layouts/PageHeader.vue'
+import SCORMPlayer from '@/components/SCORMPlayer.vue'
 import { useSidebar } from '@/stores/sidebar'
 import { sessionStore } from '../stores/session'
-import { safeUrl } from '@/utils/safeUrl'
 
 const { brand } = sessionStore()
 const sidebarStore = useSidebar()
 const user = inject('$user')
-const readyToRender = ref(false)
-const isSuccessfullyCompleted = ref(false)
-
-// If courseRestartOnFailure is true, student has to restart the whole course if failed.
-// Otherwise, student could retake the final quiz portion.
-// Ideally, this should be configurable along with `Number of failures before course should restart`.
-const courseRestartOnFailure = false
+const router = useRouter()
 
 const props = defineProps({
 	courseName: {
@@ -70,7 +88,6 @@ const props = defineProps({
 
 onBeforeMount(() => {
 	sidebarStore.isSidebarCollapsed = true
-	setupSCORMAPI()
 })
 
 const chapter = createDocumentResource({
@@ -78,9 +95,6 @@ const chapter = createDocumentResource({
 	name: props.chapterName,
 	auto: true,
 	cache: ['chapter', props.chapterName],
-	onSuccess(data) {
-		progress.submit()
-	},
 })
 
 const enrollment = createListResource({
@@ -92,86 +106,6 @@ const enrollment = createListResource({
 	},
 	auto: true,
 	cache: ['enrollments', props.courseName, user.data?.name],
-})
-
-const getDataFromLMS = (key) => {
-	if (key === 'cmi.core.lesson_status') {
-		return progress.data?.status === 'Complete' ? 'passed' : 'incomplete'
-	} else if (key === 'cmi.launch_data') {
-		return progress.data?.scorm_content || ''
-	} else if (key === 'cmi.suspend_data') {
-		return progress.data?.scorm_content || ''
-	}
-	return ''
-}
-
-let saveTimeout = null
-const debouncedSaveProgress = (scormDetails) => {
-	if (isSuccessfullyCompleted.value) return
-	clearTimeout(saveTimeout)
-	saveTimeout = setTimeout(() => {
-		if (!isSuccessfullyCompleted.value) saveProgress(scormDetails)
-	}, 300)
-}
-
-const saveDataToLMS = (key, value) => {
-	const isLessonStatus = key === 'cmi.core.lesson_status' && value === 'passed'
-	const isCompletionStatus =
-		key === 'cmi.completion_status' && value === 'completed'
-	const shouldRestart =
-		(key === 'cmi.core.lesson_status' && value === 'failed') ||
-		(key === 'cmi.completion_status' && value === 'incomplete')
-
-	if (isLessonStatus || isCompletionStatus) {
-		if (isSuccessfullyCompleted.value) return
-		isSuccessfullyCompleted.value = true
-	}
-
-	if (
-		isLessonStatus ||
-		isCompletionStatus ||
-		(shouldRestart && courseRestartOnFailure)
-	) {
-		saveProgress({
-			is_complete: isSuccessfullyCompleted.value,
-			scorm_content: '',
-		})
-		return
-	}
-
-	if (key === 'cmi.suspend_data' && !isSuccessfullyCompleted.value) {
-		debouncedSaveProgress({
-			is_complete: false,
-			scorm_content: value,
-		})
-	}
-}
-
-const saveProgress = (scormDetails = null) => {
-	call('lms.lms.doctype.course_lesson.course_lesson.save_progress', {
-		lesson: chapter.doc.lessons[0].lesson,
-		course: props.courseName,
-		scorm_details: scormDetails,
-	})
-}
-
-const progress = createResource({
-	url: 'frappe.client.get_value',
-	makeParams(values) {
-		return {
-			doctype: 'LMS Course Progress',
-			fieldname: ['status', 'scorm_content'],
-			filters: {
-				member: user.data?.name,
-				lesson: chapter.doc.lessons[0].lesson,
-				chapter: chapter.doc.name,
-				course: chapter.doc?.course,
-			},
-		}
-	},
-	onSuccess(data) {
-		readyToRender.value = true
-	},
 })
 
 const enrollStudent = () => {
@@ -188,43 +122,114 @@ const enrollStudent = () => {
 	)
 }
 
-const setupSCORMAPI = () => {
-	window.API_1484_11 = {
-		Initialize: () => 'true',
-		Terminate: () => 'true',
-		GetValue: (key) => {
-			console.log(`GET: ${key}`)
-			return getDataFromLMS(key)
-		},
-		SetValue: (key, value) => {
-			console.log(`SET: ${key} to value: ${value}`)
+const goToCourse = () => {
+	router.push({ name: 'CourseDetail', params: { courseName: props.courseName } })
+}
 
-			saveDataToLMS(key, value)
-			return 'true'
-		},
-		Commit: () => 'true',
-		GetLastError: () => '0',
-		GetErrorString: () => '',
-		GetDiagnostic: () => '',
+// Set by the `complete` event from SCORMPlayer (get_lesson_completion_state's shape):
+// { is_complete, lesson_title, next_lesson: { name, title, chapter_index, lesson_index } | null, course_complete }
+const showCompletionModal = ref(false)
+const completionState = ref(null)
+
+const resetCompletionModal = () => {
+	showCompletionModal.value = false
+	completionState.value = null
+}
+
+// SCORMChapter is reused by Vue Router across chapters (same route, only the
+// chapterName param changes: Vue Router does not remount on a param-only
+// navigation). A modal left open for the previous chapter would otherwise keep
+// floating over the next one's content unless explicitly cleared here. `chapter`
+// itself needs the same treatment: createDocumentResource captures `name` once at
+// creation and never refetches on its own, so without this, chapter.doc - and the
+// lessonName it feeds to SCORMPlayer - would stay pinned to the first chapter ever
+// opened in this component instance.
+watch(
+	() => props.chapterName,
+	(name) => {
+		resetCompletionModal()
+		chapter.name = name
+		chapter.reload()
 	}
-	window.API = {
-		LMSInitialize: () => 'true',
-		LMSFinish: () => 'true',
-		LMSGetValue: (key) => {
-			console.log(`GET: ${key}`)
-			return getDataFromLMS(key)
-		},
-		LMSSetValue: (key, value) => {
-			console.log(`SET: ${key} to value: ${value}`)
-			saveDataToLMS(key, value)
-			return 'true'
-		},
-		LMSCommit: () => 'true',
-		LMSGetLastError: () => '0',
-		LMSGetErrorString: () => '',
-		LMSGetDiagnostic: () => '',
+)
+onBeforeUnmount(resetCompletionModal)
+
+const onComplete = (state) => {
+	if (!state) return
+	if (state.course_complete || state.next_lesson) {
+		completionState.value = state
+		showCompletionModal.value = true
 	}
 }
+
+const modalTitle = computed(() =>
+	completionState.value?.course_complete
+		? __('Course complete')
+		: __('Lesson complete')
+)
+
+const modalMessage = computed(() => {
+	const lessonTitle = completionState.value?.lesson_title || chapter.doc?.title || ''
+	if (completionState.value?.course_complete) {
+		return __('Congratulations! You have completed the course.')
+	}
+	if (completionState.value?.next_lesson) {
+		return __('{0} is complete. Next up: {1}.').format(
+			lessonTitle,
+			completionState.value.next_lesson.title
+		)
+	}
+	return ''
+})
+
+const modalActions = computed(() => {
+	if (completionState.value?.course_complete) {
+		return [
+			{
+				label: __('Close'),
+				onClick: ({ close }) => close(),
+			},
+			{
+				label: __('Back to course'),
+				variant: 'solid',
+				onClick: ({ close }) => {
+					close()
+					goToCourse()
+				},
+			},
+		]
+	}
+
+	if (completionState.value?.next_lesson) {
+		const nextLesson = completionState.value.next_lesson
+		return [
+			{
+				label: __('Back to course'),
+				onClick: ({ close }) => {
+					close()
+					goToCourse()
+				},
+			},
+			{
+				label: __('Next lesson'),
+				variant: 'solid',
+				onClick: ({ close }) => {
+					close()
+					router.push({
+						name: 'Lesson',
+						params: {
+							courseName: props.courseName,
+							chapterNumber: nextLesson.chapter_index,
+							lessonNumber: nextLesson.lesson_index,
+						},
+					})
+				},
+			},
+		]
+	}
+
+	return []
+})
 
 const breadcrumbs = computed(() => {
 	return [

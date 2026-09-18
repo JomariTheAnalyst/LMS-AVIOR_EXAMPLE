@@ -421,6 +421,57 @@ def _save_progress(lesson: str, course: str, scorm_details: dict = None):
 	return progress
 
 
+@frappe.whitelist()
+def get_lesson_completion_state(course: str, lesson: str):
+	"""Read-only. What the learner should see after finishing a lesson."""
+	if not isinstance(course, str) or not isinstance(lesson, str):
+		frappe.throw(_("course and lesson must be strings"))
+
+	if not frappe.db.exists("LMS Enrollment", {"course": course, "member": frappe.session.user}):
+		raise frappe.PermissionError
+
+	progress_status = frappe.db.get_value(
+		"LMS Course Progress",
+		{"course": course, "lesson": lesson, "member": frappe.session.user},
+		"status",
+	)
+	is_complete = progress_status == "Complete"
+
+	next_lesson_name = get_next_lesson(course, lesson)
+	next_lesson = _resolve_next_lesson_navigation(course, next_lesson_name) if next_lesson_name else None
+
+	return {
+		"is_complete": is_complete,
+		"lesson_title": frappe.db.get_value("Course Lesson", lesson, "title"),
+		"next_lesson": next_lesson,
+		"course_complete": is_complete and next_lesson is None,
+	}
+
+
+def _resolve_next_lesson_navigation(course: str, lesson: str):
+	"""Chapter/lesson idx for `lesson`'s Lesson/Chapter Reference rows, or None if either
+	reference row is missing (guards against being out of sync with the content, rather
+	than raising)."""
+	lesson_reference = frappe.db.get_value(
+		"Lesson Reference", {"lesson": lesson}, ["idx", "parent"], as_dict=True
+	)
+	if lesson_reference is None:
+		return None
+
+	chapter_index = frappe.db.get_value(
+		"Chapter Reference", {"parent": course, "chapter": lesson_reference.parent}, "idx"
+	)
+	if chapter_index is None:
+		return None
+
+	return {
+		"name": lesson,
+		"title": frappe.db.get_value("Course Lesson", lesson, "title"),
+		"chapter_index": chapter_index,
+		"lesson_index": lesson_reference.idx,
+	}
+
+
 def get_next_lesson(course: str, lesson: str):
 	lesson_reference = frappe.db.get_value(
 		"Lesson Reference", {"lesson": lesson}, ["idx", "parent"], as_dict=1

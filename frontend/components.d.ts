@@ -138,6 +138,7 @@ declare module 'vue' {
     RouterView: typeof import('vue-router')['RouterView']
     RuleEditor: typeof import('./src/components/Settings/Raven/RuleEditor.vue')['default']
     RulesPanel: typeof import('./src/components/Settings/Raven/RulesPanel.vue')['default']
+    SCORMPlayer: typeof import('./src/components/SCORMPlayer.vue')['default']
     Select: typeof import('./src/components/Controls/Select.vue')['default']
     SettingDetails: typeof import('./src/components/Settings/SettingDetails.vue')['default']
     SettingFields: typeof import('./src/components/Settings/SettingFields.vue')['default']
